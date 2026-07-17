@@ -232,11 +232,6 @@ if uploaded_files:
         if sin_match:
             st.warning(f"⚠️ No se encontraron pólizas en pg.txt para: {', '.join(sin_match)}")
 
-        polizas_extraidas = {info["nro_poliza"] for info in carpetas.values()}
-        grupos_no_usados = sorted(g for g in mapa_pg if g not in polizas_extraidas)
-        if grupos_no_usados:
-            st.warning(f"⚠️ pg.txt tiene grupos que no aparecen en ningún PDF subido: {', '.join(grupos_no_usados)}")
-
     if not df_filtro.empty:
         with st.expander(f"🔍 Líneas filtradas por prefijo (mostrando 5 de {len(df_filtro)})", expanded=False):
             st.dataframe(df_filtro.head(5), use_container_width=True)
