@@ -148,10 +148,29 @@ if uploaded_files:
         if sin_match:
             st.warning(f"⚠️ No se encontraron pólizas en pg.txt para: {', '.join(sin_match)}")
 
+    # Filtrar líneas por prefijo directamente sobre los TXT ya generados (sin subir nada aparte)
+    PREFIJOS_FILTRO = ('121', '101', '301', '203', '260')
+    lineas_filtradas = []
+    for nombre_pdf, info in carpetas.items():
+        for linea in info["txt"].splitlines():
+            if linea.startswith(PREFIJOS_FILTRO):
+                lineas_filtradas.append({'archivo': nombre_pdf, 'linea': linea.strip()})
+    df_filtro = pd.DataFrame(lineas_filtradas)
+
+    if not df_filtro.empty:
+        st.subheader("🔍 Líneas filtradas por prefijo (121/101/301/203/260)")
+        st.dataframe(df_filtro, use_container_width=True)
+        cuenta_archivos = df_filtro['archivo'].value_counts().reset_index()
+        cuenta_archivos.columns = ['archivo', 'cantidad']
+        st.dataframe(cuenta_archivos, use_container_width=True)
+
     # Excel de extracción (se descarga aparte, no va dentro del ZIP)
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False)
+        df.to_excel(writer, sheet_name="Extraccion", index=False)
+        if not df_filtro.empty:
+            df_filtro.to_excel(writer, sheet_name="Lineas Filtradas", index=False)
+            cuenta_archivos.to_excel(writer, sheet_name="Cuenta por Archivo", index=False)
 
     # ZIP: una carpeta por PDF con su PDF y su TXT
     zip_buffer = io.BytesIO()
