@@ -27,7 +27,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("📄 POLIDATA")
-st.caption("Extracción automática de datos desde PDF y generación de archivos TXT y Excel")
+st.caption("Extracción automática de datos desde PDF")
 
 with st.expander("ℹ️ Cómo funciona", expanded=False):
     st.markdown(
@@ -187,9 +187,10 @@ if uploaded_files:
 
     st.success("✅ Archivos procesados correctamente")
 
-    m1, m2 = st.columns(2)
+    m1, m2, m3 = st.columns(3)
     m1.metric("PDFs procesados", total_pdfs)
-    m2.metric("Nro de pólizas", total_polizas)
+    m2.metric("Carpetas generadas", len(carpetas))
+    m3.metric("Nro de pólizas", total_polizas)
 
     if sin_poliza:
         st.warning(f"⚠️ No se pudo extraer el número de póliza de: {', '.join(sin_poliza)}")
