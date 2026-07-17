@@ -235,4 +235,6 @@ if uploaded_files:
             mime="application/zip",
             key="carpetas_zip_download",
             use_container_width=True,
+            disabled=not pg_file,
+            help=None if pg_file else "Sube pg.txt para habilitar esta descarga",
         )
