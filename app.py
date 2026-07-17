@@ -27,7 +27,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("📄 POLIDATA")
-st.caption("Extracción automática de datos desde PDF")
+st.caption("Extracción automática de datos desde PDF y generación de archivos TXT y Excel")
 
 with st.expander("ℹ️ Cómo funciona", expanded=False):
     st.markdown(
