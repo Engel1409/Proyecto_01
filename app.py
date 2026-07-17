@@ -28,6 +28,13 @@ st.markdown("""
 st.title("📄 POLIDATA")
 st.caption("Extracción automática de datos desde PDF")
 
+with st.expander("ℹ️ Cómo funciona", expanded=False):
+    st.markdown(
+        "1. Sube uno o más PDF de renovación.\n"
+        "2. (Opcional) Sube `pg.txt` (formato `grupo,poliza`) para que cada carpeta lleve sus pólizas.\n"
+        "3. Descarga el Excel de extracción o el ZIP con una carpeta por PDF (PDF + TXT)."
+    )
+
 # ---------------------------------------------------------
 # PLANTILLA FIJA PARA EL TXT
 # ---------------------------------------------------------
@@ -68,15 +75,20 @@ def parsear_pg_txt(contenido):
 # ---------------------------------------------------------
 # UPLOADERS
 # ---------------------------------------------------------
-uploaded_files = st.file_uploader(
-    "Sube tus archivos PDF aquí", type="pdf", accept_multiple_files=True, key="pdf_uploader"
-)
+col_up1, col_up2 = st.columns(2)
+with col_up1:
+    uploaded_files = st.file_uploader(
+        "Sube tus archivos PDF aquí", type="pdf", accept_multiple_files=True, key="pdf_uploader"
+    )
+with col_up2:
+    pg_file = st.file_uploader(
+        "Sube pg.txt (formato grupo,poliza) — opcional",
+        type="txt",
+        key="pg_uploader",
+    )
 
-pg_file = st.file_uploader(
-    "Sube pg.txt (formato grupo,poliza) — opcional, solo si quieres generar carpetas+TXT",
-    type="txt",
-    key="pg_uploader",
-)
+if not uploaded_files:
+    st.info("⬆️ Sube al menos un PDF para comenzar.")
 
 if uploaded_files:
     all_rows = []
@@ -87,7 +99,10 @@ if uploaded_files:
         contenido_pg = pg_file.read().decode("utf-8", errors="ignore")
         mapa_pg = parsear_pg_txt(contenido_pg)
 
-    for uploaded_file in uploaded_files:
+    progreso = st.progress(0, text="Procesando PDFs...")
+    total_pdfs = len(uploaded_files)
+
+    for idx_pdf, uploaded_file in enumerate(uploaded_files, start=1):
         pdf_bytes = uploaded_file.read()
         nombre_pdf = os.path.splitext(uploaded_file.name)[0]
 
@@ -139,9 +154,25 @@ if uploaded_files:
             "nro_poliza": nro_poliza,
         }
 
+        progreso.progress(idx_pdf / total_pdfs, text=f"Procesando PDFs... ({idx_pdf}/{total_pdfs})")
+
+    progreso.empty()
+
     df = pd.DataFrame(all_rows, columns=["Póliza", "Cliente", "Vigencia", "Sección", "Ítem", "Placa", "Marca", "Modelo", "Año", "Valor Asegurado", "Prima Neta"])
+    sin_poliza = [nombre for nombre, info in carpetas.items() if info["nro_poliza"] == "SIN_POLIZA"]
+
     st.success("✅ Archivos procesados correctamente")
-    st.dataframe(df.head(5), use_container_width=True)
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("PDFs procesados", total_pdfs)
+    m2.metric("Ítems extraídos", len(df))
+    m3.metric("Sin número de póliza", len(sin_poliza))
+
+    if sin_poliza:
+        st.warning(f"⚠️ No se pudo extraer el número de póliza de: {', '.join(sin_poliza)}")
+
+    with st.expander(f"📊 Vista previa de extracción (mostrando 5 de {len(df)})", expanded=False):
+        st.dataframe(df.head(5), use_container_width=True)
 
     if pg_file:
         sin_match = [nombre for nombre, info in carpetas.items() if info["nro_poliza"] not in mapa_pg]
@@ -159,11 +190,12 @@ if uploaded_files:
     df_filtro = pd.DataFrame(lineas_filtradas)
 
     if not df_filtro.empty:
-        st.subheader("🔍 Líneas filtradas por prefijo (121/101/301/203/260)")
-        st.dataframe(df_filtro.head(5), use_container_width=True)
         cuenta_archivos = df_filtro['archivo'].value_counts().reset_index()
         cuenta_archivos.columns = ['archivo', 'cantidad']
-        st.dataframe(cuenta_archivos.head(5), use_container_width=True)
+        with st.expander(f"🔍 Líneas filtradas por prefijo (mostrando 5 de {len(df_filtro)})", expanded=False):
+            st.dataframe(df_filtro.head(5), use_container_width=True)
+            st.caption("Cuenta por archivo:")
+            st.dataframe(cuenta_archivos.head(5), use_container_width=True)
 
     # Excel de extracción (se descarga aparte, no va dentro del ZIP)
     excel_buffer = io.BytesIO()
@@ -180,6 +212,7 @@ if uploaded_files:
             zf.writestr(f"{nombre_pdf}/{info['pdf_filename']}", info["pdf_bytes"])
             zf.writestr(f"{nombre_pdf}/{info['nro_poliza']}.txt", info["txt"])
 
+    st.divider()
     col1, col2 = st.columns(2)
     with col1:
         st.download_button(
@@ -188,6 +221,7 @@ if uploaded_files:
             file_name="Renovaciones.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="polidata_download",
+            use_container_width=True,
         )
     with col2:
         st.download_button(
@@ -196,4 +230,5 @@ if uploaded_files:
             file_name="Carpetas_POLIDATA.zip",
             mime="application/zip",
             key="carpetas_zip_download",
+            use_container_width=True,
         )
