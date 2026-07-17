@@ -3,6 +3,7 @@ import re
 import io
 import zipfile
 import warnings
+from collections import Counter
 import pdfplumber
 import pandas as pd
 import streamlit as st
@@ -91,6 +92,12 @@ if not uploaded_files:
     st.info("⬆️ Sube al menos un PDF para comenzar.")
 
 if uploaded_files:
+    nombres = [f.name for f in uploaded_files]
+    duplicados = sorted({n for n, c in Counter(nombres).items() if c > 1})
+    if duplicados:
+        st.error(f"❌ Hay archivos PDF duplicados, quítalos antes de continuar: {', '.join(duplicados)}")
+        st.stop()
+
     all_rows = []
     carpetas = {}  # nombre_pdf (sin extensión) -> {"txt": contenido, "pdf_bytes": bytes, "pdf_filename": ..., "nro_poliza": ...}
 
