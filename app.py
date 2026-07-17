@@ -48,26 +48,34 @@ def construir_txt(nro_poliza, polizas_grupo):
 
 def parsear_pg_txt(contenido):
     """
-    Formato esperado por línea: pg,operacion,poliza
-    Devuelve:
-      - filas: lista de tuplas (pg, operacion, poliza) en el orden del archivo
-      - mapa_operacion: {operacion: [poliza1, poliza2, ...]}  (se cruza contra el Nro. de póliza extraído del PDF)
+    Formato esperado por línea: grupo,poliza
+    Devuelve un dict: {grupo: [poliza1, poliza2, ...]}
     """
-    filas = []
-    mapa_operacion = {}
+    mapa = {}
     for linea in contenido.splitlines():
         linea = linea.strip()
         if not linea or "," not in linea:
             continue
-        partes = [p.strip() for p in linea.split(",", 2)]
-        if len(partes) != 3:
+        grupo, poliza = linea.split(",", 1)
+        grupo = grupo.strip()
+        poliza = poliza.strip()
+        if not grupo or not poliza:
             continue
-        pg, operacion, poliza = partes
-        if not pg or not operacion or not poliza:
-            continue
-        filas.append((pg, operacion, poliza))
-        mapa_operacion.setdefault(operacion, []).append(poliza)
-    return filas, mapa_operacion
+        mapa.setdefault(grupo, []).append(poliza)
+    return mapa
+
+
+PREFIJOS_POLIZA = ("121", "301", "260", "203", "101")
+
+
+def extraer_polizas_de_txt(nombre_archivo, contenido):
+    """
+    pg = nombre del archivo (sin extensión)
+    poliza = cada línea del contenido que empieza con alguno de PREFIJOS_POLIZA
+    """
+    pg = os.path.splitext(nombre_archivo)[0]
+    polizas = [linea.strip() for linea in contenido.splitlines() if linea.strip().startswith(PREFIJOS_POLIZA)]
+    return [(pg, poliza) for poliza in polizas]
 
 
 # ---------------------------------------------------------
@@ -78,20 +86,31 @@ uploaded_files = st.file_uploader(
 )
 
 pg_file = st.file_uploader(
-    "Sube pg.txt (formato pg,operación,poliza) — opcional, solo si quieres generar carpetas+TXT",
+    "Sube pg.txt (formato grupo,poliza) — opcional, solo si quieres generar carpetas+TXT",
     type="txt",
     key="pg_uploader",
+)
+
+txt_filtrar_files = st.file_uploader(
+    "Sube los TXT a filtrar (el nombre del archivo es la pg) — opcional, genera hoja PG_Poliza",
+    type="txt",
+    accept_multiple_files=True,
+    key="txt_filtrar_uploader",
 )
 
 if uploaded_files:
     all_rows = []
     carpetas = {}  # nombre_pdf (sin extensión) -> {"txt": contenido, "pdf_bytes": bytes}
 
-    filas_pg = []
-    mapa_operacion = {}
+    mapa_pg = {}
     if pg_file:
         contenido_pg = pg_file.read().decode("utf-8", errors="ignore")
-        filas_pg, mapa_operacion = parsear_pg_txt(contenido_pg)
+        mapa_pg = parsear_pg_txt(contenido_pg)
+
+    filas_pg_poliza = []
+    for txt_f in (txt_filtrar_files or []):
+        contenido_txt_f = txt_f.read().decode("utf-8", errors="ignore")
+        filas_pg_poliza.extend(extraer_polizas_de_txt(txt_f.name, contenido_txt_f))
 
     for uploaded_file in uploaded_files:
         pdf_bytes = uploaded_file.read()
@@ -137,7 +156,7 @@ if uploaded_files:
                     all_rows.append([nro_poliza, nombre_cliente, rango_vigencia, sec, item_texto, placa, marca, modelo, anio, match.group(2), match.group(3)])
 
         # Generar el TXT de este PDF (aunque no haya match en pg.txt, se crea con el encabezado base)
-        polizas_grupo = mapa_operacion.get(nro_poliza, [])
+        polizas_grupo = mapa_pg.get(nro_poliza, [])
         carpetas[nombre_pdf] = {
             "txt": construir_txt(nro_poliza, polizas_grupo),
             "pdf_bytes": pdf_bytes,
@@ -150,17 +169,17 @@ if uploaded_files:
     st.dataframe(df, use_container_width=True)
 
     if pg_file:
-        sin_match = [nombre for nombre, info in carpetas.items() if info["nro_poliza"] not in mapa_operacion]
+        sin_match = [nombre for nombre, info in carpetas.items() if info["nro_poliza"] not in mapa_pg]
         if sin_match:
             st.warning(f"⚠️ No se encontraron pólizas en pg.txt para: {', '.join(sin_match)}")
 
-    # Excel de extracción, con una segunda hoja de pg / operación / póliza si se subió pg.txt
+    # Excel de extracción, con una segunda hoja de pg / póliza si se subieron TXT a filtrar
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Extraccion", index=False)
-        if filas_pg:
-            df_pg = pd.DataFrame(filas_pg, columns=["pg", "Nro. Operación", "poliza"])
-            df_pg.to_excel(writer, sheet_name="PG_Operacion_Poliza", index=False)
+        if filas_pg_poliza:
+            df_pg_poliza = pd.DataFrame(filas_pg_poliza, columns=["pg", "poliza"])
+            df_pg_poliza.to_excel(writer, sheet_name="PG_Poliza", index=False)
 
     # ZIP: una carpeta por PDF con su PDF y su TXT (sin el Excel adentro)
     zip_buffer = io.BytesIO()
