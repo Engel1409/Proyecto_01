@@ -29,7 +29,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("📄 POLIDATA")
-st.caption("Extracción automática de datos desde PDF")
+st.caption("Extracción automática de datos desde PDF y Creación de carpetas base")
 
 with st.expander("ℹ️ Cómo funciona", expanded=False):
     st.markdown(
@@ -278,19 +278,21 @@ if uploaded_files:
     if not zip_valido:
         st.error("❌ El ZIP generado salió corrupto. Intenta de nuevo o avísame si se repite.")
 
-    sello_fecha = datetime.now().strftime("%Y%m%d")
+    sello_fecha = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     st.divider()
     col1, col2 = st.columns(2)
     with col1:
-        st.download_button(
-            "⬇️ Descargar Excel",
-            data=excel_buffer.getvalue(),
-            file_name=f"Renovaciones_{sello_fecha}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="polidata_download",
-            use_container_width=True,
+        nombre_excel = f"Renovaciones_{sello_fecha}.xlsx"
+        b64_excel = base64.b64encode(excel_buffer.getvalue()).decode()
+        href_excel = (
+            f'<a download="{nombre_excel}" '
+            f'href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64_excel}" '
+            f'style="display:inline-block;width:100%;text-align:center;padding:0.5em 0;'
+            f'background-color:#1e293b;color:white;font-weight:bold;border-radius:8px;'
+            f'text-decoration:none;">⬇️ Descargar Excel</a>'
         )
+        st.markdown(href_excel, unsafe_allow_html=True)
     with col2:
         nombre_zip = f"Carpetas_POLIDATA_{sello_fecha}.zip"
         if not pg_file:
