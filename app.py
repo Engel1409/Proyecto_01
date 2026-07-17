@@ -74,6 +74,15 @@ def parsear_pg_txt(contenido):
     return mapa
 
 
+def sanear_nombre(nombre):
+    """Reemplaza caracteres problemáticos para rutas dentro del ZIP (tildes, espacios, símbolos)."""
+    import unicodedata
+    nombre = unicodedata.normalize("NFKD", nombre).encode("ascii", "ignore").decode("ascii")
+    nombre = re.sub(r'[\\/:*?"<>|]', "_", nombre)
+    nombre = re.sub(r"\s+", "_", nombre).strip("_")
+    return nombre or "SIN_NOMBRE"
+
+
 # ---------------------------------------------------------
 # UPLOADERS
 # ---------------------------------------------------------
@@ -246,12 +255,27 @@ if uploaded_files:
             df_filtro.to_excel(writer, sheet_name="Lineas Filtradas", index=False)
             cuenta_archivos.to_excel(writer, sheet_name="Cuenta por Archivo", index=False)
 
-    # ZIP: una carpeta por PDF con su PDF y su TXT
+    # ZIP: una carpeta por PDF con su PDF y su TXT (nombres saneados para evitar ZIPs inválidos)
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for nombre_pdf, info in carpetas.items():
-            zf.writestr(f"{nombre_pdf}/{info['pdf_filename']}", info["pdf_bytes"])
-            zf.writestr(f"{nombre_pdf}/{info['nro_poliza']}.txt", info["txt"])
+            carpeta_zip = sanear_nombre(nombre_pdf)
+            pdf_zip = sanear_nombre(os.path.splitext(info["pdf_filename"])[0]) + ".pdf"
+            txt_zip = sanear_nombre(info["nro_poliza"]) + ".txt"
+            zf.writestr(f"{carpeta_zip}/{pdf_zip}", info["pdf_bytes"])
+            zf.writestr(f"{carpeta_zip}/{txt_zip}", info["txt"])
+
+    zip_bytes = zip_buffer.getvalue()
+    zip_valido = True
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf_check:
+            if zf_check.testzip() is not None:
+                zip_valido = False
+    except zipfile.BadZipFile:
+        zip_valido = False
+
+    if not zip_valido:
+        st.error("❌ El ZIP generado salió corrupto. Intenta de nuevo o avísame si se repite.")
 
     sello_fecha = datetime.now().strftime("%Y%m%d")
 
@@ -269,11 +293,11 @@ if uploaded_files:
     with col2:
         st.download_button(
             "📁 Descargar carpetas (ZIP)",
-            data=zip_buffer.getvalue(),
+            data=zip_bytes,
             file_name=f"Carpetas_POLIDATA_{sello_fecha}.zip",
             mime="application/zip",
             key="carpetas_zip_download",
             use_container_width=True,
-            disabled=not pg_file,
+            disabled=not pg_file or not zip_valido,
             help=None if pg_file else "Sube pg.txt para habilitar esta descarga",
         )
