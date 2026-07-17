@@ -13,7 +13,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 # ---------------------------------------------------------
 # CONFIGURACIÓN DE PÁGINA
 # ---------------------------------------------------------
-st.set_page_config(page_title="POLIDATAv2", layout="wide")
+st.set_page_config(page_title="POLIDATA", layout="wide")
 
 st.markdown("""
     <style>
@@ -65,19 +65,6 @@ def parsear_pg_txt(contenido):
     return mapa
 
 
-PREFIJOS_POLIZA = ("121", "301", "260", "203", "101")
-
-
-def extraer_polizas_de_txt(nombre_archivo, contenido):
-    """
-    pg = nombre del archivo (sin extensión)
-    poliza = cada línea del contenido que empieza con alguno de PREFIJOS_POLIZA
-    """
-    pg = os.path.splitext(nombre_archivo)[0]
-    polizas = [linea.strip() for linea in contenido.splitlines() if linea.strip().startswith(PREFIJOS_POLIZA)]
-    return [(pg, poliza) for poliza in polizas]
-
-
 # ---------------------------------------------------------
 # UPLOADERS
 # ---------------------------------------------------------
@@ -91,15 +78,9 @@ pg_file = st.file_uploader(
     key="pg_uploader",
 )
 
-txt_filtrar_files = st.file_uploader(
-    "Sube los TXT a filtrar (el nombre del archivo es la pg) — opcional, genera hoja PG_Poliza",
-    type="txt",
-    accept_multiple_files=True,
-    key="txt_filtrar_uploader",
-)
-
 if uploaded_files:
     all_rows = []
+    txt_por_pdf = {}  # nro_poliza -> contenido del txt
     carpetas = {}  # nombre_pdf (sin extensión) -> {"txt": contenido, "pdf_bytes": bytes}
 
     mapa_pg = {}
@@ -107,12 +88,8 @@ if uploaded_files:
         contenido_pg = pg_file.read().decode("utf-8", errors="ignore")
         mapa_pg = parsear_pg_txt(contenido_pg)
 
-    filas_pg_poliza = []
-    for txt_f in (txt_filtrar_files or []):
-        contenido_txt_f = txt_f.read().decode("utf-8", errors="ignore")
-        filas_pg_poliza.extend(extraer_polizas_de_txt(txt_f.name, contenido_txt_f))
-
     for uploaded_file in uploaded_files:
+        with pdfplumber.open(uploaded_file) as pdf:
         pdf_bytes = uploaded_file.read()
         nombre_pdf = os.path.splitext(uploaded_file.name)[0]
 
@@ -157,6 +134,7 @@ if uploaded_files:
 
         # Generar el TXT de este PDF (aunque no haya match en pg.txt, se crea con el encabezado base)
         polizas_grupo = mapa_pg.get(nro_poliza, [])
+        txt_por_pdf[nro_poliza] = construir_txt(nro_poliza, polizas_grupo)
         carpetas[nombre_pdf] = {
             "txt": construir_txt(nro_poliza, polizas_grupo),
             "pdf_bytes": pdf_bytes,
@@ -169,21 +147,31 @@ if uploaded_files:
     st.dataframe(df, use_container_width=True)
 
     if pg_file:
+        sin_match = [g for g in txt_por_pdf if g not in mapa_pg]
         sin_match = [nombre for nombre, info in carpetas.items() if info["nro_poliza"] not in mapa_pg]
         if sin_match:
             st.warning(f"⚠️ No se encontraron pólizas en pg.txt para: {', '.join(sin_match)}")
 
-    # Excel de extracción, con una segunda hoja de pg / póliza si se subieron TXT a filtrar
+    # Excel de extracción (va dentro del ZIP final, en la raíz)
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="Extraccion", index=False)
-        if filas_pg_poliza:
-            df_pg_poliza = pd.DataFrame(filas_pg_poliza, columns=["pg", "poliza"])
-            df_pg_poliza.to_excel(writer, sheet_name="PG_Poliza", index=False)
+        df.to_excel(writer, index=False)
 
+    # ZIP único: Excel de extracción + una carpeta por PDF con su TXT
     # ZIP: una carpeta por PDF con su PDF y su TXT (sin el Excel adentro)
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("Renovaciones.xlsx", excel_buffer.getvalue())
+        for nro_poliza, contenido_txt in txt_por_pdf.items():
+            zf.writestr(f"{nro_poliza}/{nro_poliza}.txt", contenido_txt)
+
+    st.download_button(
+        "📥 Descargar resultado completo (ZIP)",
+        data=zip_buffer.getvalue(),
+        file_name="Resultado_POLIDATA.zip",
+        mime="application/zip",
+        key="resultado_download",
+    )
         for nombre_pdf, info in carpetas.items():
             zf.writestr(f"{nombre_pdf}/{info['pdf_filename']}", info["pdf_bytes"])
             zf.writestr(f"{nombre_pdf}/{info['nro_poliza']}.txt", info["txt"])
