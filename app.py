@@ -80,8 +80,7 @@ pg_file = st.file_uploader(
 
 if uploaded_files:
     all_rows = []
-    txt_por_pdf = {}  # nro_poliza -> contenido del txt
-    carpetas = {}  # nombre_pdf (sin extensión) -> {"txt": contenido, "pdf_bytes": bytes}
+    carpetas = {}  # nombre_pdf (sin extensión) -> {"txt": contenido, "pdf_bytes": bytes, "pdf_filename": ..., "nro_poliza": ...}
 
     mapa_pg = {}
     if pg_file:
@@ -89,7 +88,6 @@ if uploaded_files:
         mapa_pg = parsear_pg_txt(contenido_pg)
 
     for uploaded_file in uploaded_files:
-        with pdfplumber.open(uploaded_file) as pdf:
         pdf_bytes = uploaded_file.read()
         nombre_pdf = os.path.splitext(uploaded_file.name)[0]
 
@@ -134,7 +132,6 @@ if uploaded_files:
 
         # Generar el TXT de este PDF (aunque no haya match en pg.txt, se crea con el encabezado base)
         polizas_grupo = mapa_pg.get(nro_poliza, [])
-        txt_por_pdf[nro_poliza] = construir_txt(nro_poliza, polizas_grupo)
         carpetas[nombre_pdf] = {
             "txt": construir_txt(nro_poliza, polizas_grupo),
             "pdf_bytes": pdf_bytes,
@@ -147,31 +144,18 @@ if uploaded_files:
     st.dataframe(df, use_container_width=True)
 
     if pg_file:
-        sin_match = [g for g in txt_por_pdf if g not in mapa_pg]
         sin_match = [nombre for nombre, info in carpetas.items() if info["nro_poliza"] not in mapa_pg]
         if sin_match:
             st.warning(f"⚠️ No se encontraron pólizas en pg.txt para: {', '.join(sin_match)}")
 
-    # Excel de extracción (va dentro del ZIP final, en la raíz)
+    # Excel de extracción (se descarga aparte, no va dentro del ZIP)
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False)
 
-    # ZIP único: Excel de extracción + una carpeta por PDF con su TXT
-    # ZIP: una carpeta por PDF con su PDF y su TXT (sin el Excel adentro)
+    # ZIP: una carpeta por PDF con su PDF y su TXT
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("Renovaciones.xlsx", excel_buffer.getvalue())
-        for nro_poliza, contenido_txt in txt_por_pdf.items():
-            zf.writestr(f"{nro_poliza}/{nro_poliza}.txt", contenido_txt)
-
-    st.download_button(
-        "📥 Descargar resultado completo (ZIP)",
-        data=zip_buffer.getvalue(),
-        file_name="Resultado_POLIDATA.zip",
-        mime="application/zip",
-        key="resultado_download",
-    )
         for nombre_pdf, info in carpetas.items():
             zf.writestr(f"{nombre_pdf}/{info['pdf_filename']}", info["pdf_bytes"])
             zf.writestr(f"{nombre_pdf}/{info['nro_poliza']}.txt", info["txt"])
@@ -191,5 +175,5 @@ if uploaded_files:
             data=zip_buffer.getvalue(),
             file_name="Carpetas_POLIDATA.zip",
             mime="application/zip",
-            key="resultado_download",
+            key="carpetas_zip_download",
         )
