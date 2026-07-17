@@ -161,12 +161,28 @@ if uploaded_files:
     df = pd.DataFrame(all_rows, columns=["Póliza", "Cliente", "Vigencia", "Sección", "Ítem", "Placa", "Marca", "Modelo", "Año", "Valor Asegurado", "Prima Neta"])
     sin_poliza = [nombre for nombre, info in carpetas.items() if info["nro_poliza"] == "SIN_POLIZA"]
 
+    # Filtrar líneas por prefijo directamente sobre los TXT ya generados (sin subir nada aparte)
+    PREFIJOS_FILTRO = ('121', '101', '301', '203', '260')
+    lineas_filtradas = []
+    for nombre_pdf, info in carpetas.items():
+        nombre_txt = f"{info['nro_poliza']}.txt"
+        for linea in info["txt"].splitlines():
+            if linea.startswith(PREFIJOS_FILTRO):
+                lineas_filtradas.append({'archivo': nombre_txt, 'linea': linea.strip()})
+    df_filtro = pd.DataFrame(lineas_filtradas)
+
+    cuenta_archivos = pd.DataFrame(columns=['archivo', 'cantidad'])
+    total_polizas = 0
+    if not df_filtro.empty:
+        cuenta_archivos = df_filtro['archivo'].value_counts().reset_index()
+        cuenta_archivos.columns = ['archivo', 'cantidad']
+        total_polizas = int(cuenta_archivos['cantidad'].sum())
+
     st.success("✅ Archivos procesados correctamente")
 
-    m1, m2, m3 = st.columns(3)
+    m1, m2 = st.columns(2)
     m1.metric("PDFs procesados", total_pdfs)
-    m2.metric("Ítems extraídos", len(df))
-    m3.metric("Sin número de póliza", len(sin_poliza))
+    m2.metric("Nro de pólizas", total_polizas)
 
     if sin_poliza:
         st.warning(f"⚠️ No se pudo extraer el número de póliza de: {', '.join(sin_poliza)}")
@@ -179,19 +195,7 @@ if uploaded_files:
         if sin_match:
             st.warning(f"⚠️ No se encontraron pólizas en pg.txt para: {', '.join(sin_match)}")
 
-    # Filtrar líneas por prefijo directamente sobre los TXT ya generados (sin subir nada aparte)
-    PREFIJOS_FILTRO = ('121', '101', '301', '203', '260')
-    lineas_filtradas = []
-    for nombre_pdf, info in carpetas.items():
-        nombre_txt = f"{info['nro_poliza']}.txt"
-        for linea in info["txt"].splitlines():
-            if linea.startswith(PREFIJOS_FILTRO):
-                lineas_filtradas.append({'archivo': nombre_txt, 'linea': linea.strip()})
-    df_filtro = pd.DataFrame(lineas_filtradas)
-
     if not df_filtro.empty:
-        cuenta_archivos = df_filtro['archivo'].value_counts().reset_index()
-        cuenta_archivos.columns = ['archivo', 'cantidad']
         with st.expander(f"🔍 Líneas filtradas por prefijo (mostrando 5 de {len(df_filtro)})", expanded=False):
             st.dataframe(df_filtro.head(5), use_container_width=True)
             st.caption("Cuenta por archivo:")
