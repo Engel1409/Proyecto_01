@@ -141,7 +141,7 @@ if uploaded_files:
 
     df = pd.DataFrame(all_rows, columns=["Póliza", "Cliente", "Vigencia", "Sección", "Ítem", "Placa", "Marca", "Modelo", "Año", "Valor Asegurado", "Prima Neta"])
     st.success("✅ Archivos procesados correctamente")
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df.head(5), use_container_width=True)
 
     if pg_file:
         sin_match = [nombre for nombre, info in carpetas.items() if info["nro_poliza"] not in mapa_pg]
@@ -152,17 +152,18 @@ if uploaded_files:
     PREFIJOS_FILTRO = ('121', '101', '301', '203', '260')
     lineas_filtradas = []
     for nombre_pdf, info in carpetas.items():
+        nombre_txt = f"{info['nro_poliza']}.txt"
         for linea in info["txt"].splitlines():
             if linea.startswith(PREFIJOS_FILTRO):
-                lineas_filtradas.append({'archivo': nombre_pdf, 'linea': linea.strip()})
+                lineas_filtradas.append({'archivo': nombre_txt, 'linea': linea.strip()})
     df_filtro = pd.DataFrame(lineas_filtradas)
 
     if not df_filtro.empty:
         st.subheader("🔍 Líneas filtradas por prefijo (121/101/301/203/260)")
-        st.dataframe(df_filtro, use_container_width=True)
+        st.dataframe(df_filtro.head(5), use_container_width=True)
         cuenta_archivos = df_filtro['archivo'].value_counts().reset_index()
         cuenta_archivos.columns = ['archivo', 'cantidad']
-        st.dataframe(cuenta_archivos, use_container_width=True)
+        st.dataframe(cuenta_archivos.head(5), use_container_width=True)
 
     # Excel de extracción (se descarga aparte, no va dentro del ZIP)
     excel_buffer = io.BytesIO()
