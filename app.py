@@ -13,7 +13,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 # ---------------------------------------------------------
 # CONFIGURACIÓN DE PÁGINA
 # ---------------------------------------------------------
-st.set_page_config(page_title="POLIDATA", layout="wide")
+st.set_page_config(page_title="POLIDATAv2", layout="wide")
 
 st.markdown("""
     <style>
