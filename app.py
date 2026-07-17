@@ -189,7 +189,7 @@ if uploaded_files:
 
     m1, m2, m3 = st.columns(3)
     m1.metric("PDFs procesados", total_pdfs)
-    m2.metric("Carpetas generadas", len(carpetas))
+    m2.metric("Carpetas generadas", len(carpetas) if pg_file else 0)
     m3.metric("Nro de pólizas", total_polizas)
 
     if sin_poliza:
