@@ -167,7 +167,9 @@ if uploaded_files:
                         placa = placa_match.group(1).strip() if placa_match else ""
 
                         marca = modelo = anio = ""
-                        if placa and idx + 1 < len(lineas):
+                        if idx + 1 < len(lineas):
+                            # se busca marca/modelo/año en la línea siguiente
+                            # sin importar si el ítem tiene placa o no
                             siguiente = lineas[idx + 1]
                             marca_match = re.search(r"MARCA:\s*([^,]+)", siguiente, re.IGNORECASE)
                             modelo_match = re.search(r"MODELO:\s*([^,]+)", siguiente, re.IGNORECASE)
