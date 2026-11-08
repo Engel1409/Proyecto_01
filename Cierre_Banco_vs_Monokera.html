@@ -47,6 +47,8 @@ footer{text-align:center;color:var(--mut);font-size:12px;margin-top:26px}
 <div class="fz"><div class="top"><span class="num">3</span><b>TXT de cobros</b><span class="ico">💳</span></div><small>COB_AAAAMMDD.TXT, separado por punto y coma</small><input type="file" id="fCob" accept=".txt,.TXT,.csv"><span class="fn" id="nCob">Ningún archivo</span></div>
 <div class="fz"><div class="top"><span class="num">4</span><b>TXT de emisión (altas)</b><span class="ico">🆕</span></div><small>EDGP_*.TXT; elige los dos (sepelio y desempleo) a la vez</small><input type="file" id="fEmi" accept=".txt,.TXT" multiple><span class="fn" id="nEmi">Ningún archivo</span></div>
 </div>
+<label style="display:flex;gap:8px;align-items:center;margin-top:16px;font-size:13px;cursor:pointer"><input type="checkbox" id="chkDev" checked> Anulaciones: ignorar las pólizas con monto 0 en todos los lados (las que tienen monto en un lado y 0 en el otro sí se muestran, con etiqueta)</label>
+<label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:13px;cursor:pointer"><input type="checkbox" id="chkRec" checked> Cobros: considerar solo recurrentes (TXT con cuota mayor a 1; banco con TIPO = RECURRENTE). La cuota 1 es venta.</label>
 <div class="bar"><button id="procesar">▶ Procesar</button><button id="descargar" class="sec" disabled>⬇ Descargar Excel</button><span id="msg" class="msg"></span></div></div>
 <div id="resultado"></div>
 <footer>Tip: también puedes arrastrar los archivos sobre cada cuadro.</footer>
@@ -82,6 +84,14 @@ const fmtFecha = v => {
   if (v instanceof Date) return new Date(v.getTime() + 12 * 3600 * 1000).toISOString().slice(0, 10);
   return (v === null || v === undefined) ? '' : String(v);
 };
+const fmtDMY = v => {
+  if (v === null || v === undefined || v === '') return '';
+  let iso = null;
+  if (v instanceof Date) iso = new Date(v.getTime() + 12 * 3600 * 1000).toISOString().slice(0, 10);
+  else if (typeof v === 'number' && v > 20000) iso = new Date(Math.round((v - 25569) * 86400000) + 12 * 3600 * 1000).toISOString().slice(0, 10);
+  else { const m = String(v).trim().match(/^(\d{4})-(\d{2})-(\d{2})/); if (m) iso = m[0]; else return String(v).trim(); }
+  return iso.slice(8, 10) + '/' + iso.slice(5, 7) + '/' + iso.slice(0, 4);
+};
 const filas = (wb, hoja) => XLSX.utils.sheet_to_json(wb.Sheets[hoja], { header: 1, raw: true, defval: null, blankrows: false });
 
 // Busca la fila de encabezados (en las primeras 15 filas) que contenga todas las columnas pedidas
@@ -96,10 +106,12 @@ function tabla(aoa, requeridas) {
   }
   return null;
 }
+const planCodigo = v => { const x = norm(v); if (!x) return null; if (x.includes('CONYUGE') || x.includes('CÓNYUGE')) return 2; if (x === 'INDIVIDUAL') return 1; const m = x.match(/(\d)\s*$/); return m ? parseInt(m[1]) : null; };
+const planEtiqueta = (seg, c) => c === null || c === undefined || c === '' ? '' : seg === 'SEPELIO' ? (c === 1 ? 'INDIVIDUAL' : c === 2 ? 'INDIVIDUAL + CONYUGE' : 'PLAN ' + c) : 'PLAN ' + c;
 const seguroDe = cert => cert.startsWith('MSS') ? 'SEPELIO' : cert.startsWith('MPD') ? 'DESEMPLEO' : 'OTRO';
 
 /* ---------- ANULACIONES ---------- */
-function procesarAnulaciones(wbBanco, wbMon) {
+function procesarAnulaciones(wbBanco, wbMon, soloConDev = true) {
   const mt = tabla(filas(wbMon, wbMon.SheetNames[0]), ['NUM_POLIZA']);
   if (!mt) throw new Error('La trama de anulación no tiene la columna NUM_POLIZA.');
   const iP = mt.idx['NUM_POLIZA'], iI = mt.idx['IMP_PRIMA_DEV'];
@@ -116,34 +128,44 @@ function procesarAnulaciones(wbBanco, wbMon) {
   const ban = new Map(); let totalBan = 0;
   for (const h of hojas) {
     const t = tabla(filas(wbBanco, h), ['POLIZA']); if (!t) continue;
-    const iPo = t.idx['POLIZA'], iD = t.idx['DEVOLUCIÓN'], iT = t.idx['CO_TICKET'], iN = t.idx['NOMBRE CLIENTE'];
+    const iPo = t.idx['POLIZA'], iD = t.idx['DEVOLUCIÓN'], iT = t.idx['CO_TICKET'], iN = t.idx['NOMBRE CLIENTE'], iFA = t.idx['FECHA ATENCION'];
     for (const r of t.data) {
       const k = norm(r[iPo]); if (!k) continue;
       totalBan++;
-      const o = ban.get(k) || { n: 0, dev: 0, hoja: new Set(), ticket: '', cliente: '' };
-      o.n++; if (iD !== undefined) o.dev += num(r[iD]);
+      const o = ban.get(k) || { n: 0, dev: 0, hoja: new Set(), ticket: '', cliente: '', fechas: new Set() };
+      if (iFA !== undefined) { const fa = fmtDMY(r[iFA]); if (fa) o.fechas.add(fa); }
+      o.n++; if (iD !== undefined) o.dev += Math.abs(num(r[iD]));
       o.hoja.add(h); if (iT !== undefined) o.ticket = r[iT] ?? ''; if (iN !== undefined) o.cliente = r[iN] ?? '';
       ban.set(k, o);
     }
   }
   const claves = new Set([...mon.keys(), ...ban.keys()]);
   const orden = { 'COINCIDE': 0, 'SOLO MONOKERA': 1, 'SOLO BANCO': 2 };
-  const out = [];
+  const out = []; let excluidas = 0;
   for (const k of claves) {
     const m = mon.get(k), b = ban.get(k);
+    const mp = m ? r2(m.prima) : 0, bd = b ? r2(b.dev) : 0;
+    if (soloConDev && mp < 0.005 && bd < 0.005) { excluidas++; continue; }   // sin monto en ningún lado
     const res = m && b ? 'COINCIDE' : m ? 'SOLO MONOKERA' : 'SOLO BANCO';
-    out.push([k, res, m ? m.n : 0, m ? r2(m.prima) : 0, b ? b.n : 0, b ? r2(b.dev) : 0, b ? [...b.hoja].join(', ') : '', b ? b.ticket : '', b ? b.cliente : '']);
+    let tag = '';
+    if (m && b) tag = mp > 0 && bd > 0 ? (Math.abs(mp - bd) < 0.005 ? 'MONTOS IGUALES' : 'MONTO DISTINTO')
+      : bd > 0 ? 'BANCO CON PRIMA, MONOKERA EN 0' : mp > 0 ? 'MONOKERA CON PRIMA, BANCO EN 0' : 'AMBOS EN 0';
+    else if (m && mp < 0.005) tag = 'SOLO MONOKERA EN 0'; else if (b && bd < 0.005) tag = 'SOLO BANCO EN 0';
+    out.push([k, res, tag, m ? m.n : 0, mp, b ? b.n : 0, bd, r2(bd - mp), b ? [...b.fechas].join(', ') : '', b ? [...b.hoja].join(', ') : '', b ? b.ticket : '', b ? b.cliente : '']);
   }
-  out.sort((a, b) => orden[a[1]] - orden[b[1]] || a[0].localeCompare(b[0]));
+  out.sort((a, b) => orden[a[1]] - orden[b[1]] || a[2].localeCompare(b[2]) || a[0].localeCompare(b[0]));
   const cuenta = s => out.filter(x => x[1] === s).length;
+  const etiquetas = ['BANCO CON PRIMA, MONOKERA EN 0', 'MONOKERA CON PRIMA, BANCO EN 0', 'MONTO DISTINTO', 'AMBOS EN 0', 'SOLO MONOKERA EN 0', 'SOLO BANCO EN 0', 'MONTOS IGUALES'].map(t => [t, out.filter(x => x[2] === t).length]).filter(x => x[1] > 0);
   return {
-    encabezado: ['Poliza', 'Resultado', 'Filas Monokera', 'Prima Monokera', 'Filas Banco', 'Devolución Banco', 'Hoja banco', 'Ticket banco', 'Cliente banco'],
-    filas: out,
-    resumen: { coinciden: cuenta('COINCIDE'), soloMon: cuenta('SOLO MONOKERA'), soloBan: cuenta('SOLO BANCO'), total: out.length, filasMon: totalMon, filasBan: totalBan }
+    encabezado: ['Poliza', 'Resultado', 'Etiqueta de monto', 'Filas Monokera', 'Prima Monokera', 'Filas Banco', 'Devolución Banco', 'Dif. monto (banco − Monokera)', 'Fecha atención (banco)', 'Hoja banco', 'Ticket banco', 'Cliente banco'],
+    filas: out, etiquetas,
+    resumen: { coinciden: cuenta('COINCIDE'), soloMon: cuenta('SOLO MONOKERA'), soloBan: cuenta('SOLO BANCO'), total: out.length, filasMon: totalMon, filasBan: totalBan, excluidas, soloConDev }
   };
 }
 
-/* ---------- COBROS ---------- */
+/* ---------- COBROS ----------
+   Cabecera del TXT: 0 num_poliza_grupo, 1 cod_producto, 2 num_unico_item (= certificado MSS/MPD), 3 num_poliza (vacío), 4 num_cuota,
+   5 fec_vcto_cuota, 6 num_recibo, 7 cod_mon, 8 imp_cobrado, 9 anio_mes, 10 PG, 11 PLAN */
 function leerTxtCobros(texto) {
   const lineas = texto.split(/\r?\n/).filter(l => l.trim() !== '');
   const reg = []; let malas = 0, colsRaras = 0; const periodos = new Set();
@@ -152,7 +174,7 @@ function leerTxtCobros(texto) {
     if (f.length < 9) { malas++; continue; }
     if (f.length !== 12) colsRaras++;
     const cert = norm(f[2]);
-    reg.push({ cert, seg: seguroDe(cert), cuota: parseInt(f[4]) || 0, prima: num(f[8]) });
+    reg.push({ cert, seg: seguroDe(cert), cuota: parseInt(f[4]) || 0, prima: num(f[8]), plan: parseInt(f[11]) || null });
     periodos.add((f[9] || '').trim());
   }
   return { reg, malas, colsRaras, periodos: [...periodos], lineas: lineas.length };
@@ -164,29 +186,35 @@ function posibleDigitacion(a, b) { // mismo largo y prefijo, un dígito distinto
   return d.length === 1 || (d.length === 2 && d[1] === d[0] + 1 && a[d[0]] === b[d[1]] && a[d[1]] === b[d[0]]);
 }
 
-function procesarCobros(wbBanco, texto) {
+function procesarCobros(wbBanco, texto, soloRec = true) {
   const hData = wbBanco.SheetNames.find(n => n.trim().toLowerCase() === 'data');
   if (!hData) throw new Error('No encontré la hoja "data" en la conciliación del banco.');
   const t = tabla(filas(wbBanco, hData), ['NU_CERTIFICADO', 'SEGURO', 'PRIMA']);
   if (!t) throw new Error('La hoja "data" no tiene las columnas NU_CERTIFICADO, SEGURO y PRIMA.');
-  const iC = t.idx['NU_CERTIFICADO'], iS = t.idx['SEGURO'], iP = t.idx['PRIMA'], iF = t.idx['FECHAPROCESO'];
+  const iC = t.idx['NU_CERTIFICADO'], iS = t.idx['SEGURO'], iP = t.idx['PRIMA'], iF = t.idx['FECHAPROCESO'], iPl = t.idx['TIPO_PLAN'];
   const tx = leerTxtCobros(texto);
-  const txt = new Map();
+  const totalTxtLeido = tx.reg.length;
+  if (soloRec) tx.reg = tx.reg.filter(r => r.cuota >= 2);   // cuota 1 = venta
+  const ignTxt = totalTxtLeido - tx.reg.length; let ignBan = 0;
+  const txt = new Map(); const banRec = new Map(), txtRec = new Map();
   for (const r of tx.reg) {
     const k = r.cert + '|' + r.seg;
-    const o = txt.get(k) || { n: 0, prima: 0, cmax: 0 };
+    const o = txt.get(k) || { n: 0, prima: 0, cmax: 0, plan: r.plan };
     o.n++; o.prima += r.prima; o.cmax = Math.max(o.cmax, r.cuota); txt.set(k, o);
+    if (r.cuota >= 2) txtRec.set(k, (txtRec.get(k) || 0) + 1);
   }
-  const ban = new Map(); const bancoFilas = []; let conEspacios = 0;
+  const ban = new Map(); const bancoFilas = []; let conEspacios = 0; const iTipo = t.idx['TIPO'];
   for (const r of t.data) {
     const crudo = r[iC]; const cert = norm(crudo); if (!cert) continue;
+    if (soloRec && iTipo !== undefined && norm(r[iTipo]) !== 'RECURRENTE') { ignBan++; continue; }
     if (String(crudo) !== String(crudo).trim()) conEspacios++;
     const seg = norm(r[iS]) || seguroDe(cert);
-    const k = cert + '|' + seg, prima = num(r[iP]), f = iF !== undefined ? fmtFecha(r[iF]) : '';
-    const o = ban.get(k) || { n: 0, prima: 0, fmin: '', fmax: '' };
+    const k = cert + '|' + seg, prima = num(r[iP]), f = iF !== undefined ? fmtFecha(r[iF]) : '', plan = iPl !== undefined ? planCodigo(r[iPl]) : null;
+    const o = ban.get(k) || { n: 0, prima: 0, fmin: '', fmax: '', plan };
     o.n++; o.prima += prima;
     if (f) { if (!o.fmin || f < o.fmin) o.fmin = f; if (!o.fmax || f > o.fmax) o.fmax = f; }
-    ban.set(k, o); bancoFilas.push({ k, seg, f, prima });
+    ban.set(k, o); bancoFilas.push({ k, seg, f, prima, plan });
+    if (iTipo === undefined || norm(r[iTipo]) === 'RECURRENTE') banRec.set(k, (banRec.get(k) || 0) + 1);
   }
   const claves = new Set([...ban.keys(), ...txt.keys()]);
   const cons = [];
@@ -197,11 +225,13 @@ function procesarCobros(wbBanco, texto) {
     if (nt === 0) sit = 'SOLO BANCO'; else if (nb === 0) sit = 'SOLO MONOKERA';
     else if (nb > nt) sit = 'BANCO TIENE MÁS FILAS'; else if (nb < nt) sit = 'MONOKERA TIENE MÁS FILAS';
     else sit = Math.abs(pb - pt) > 0.005 ? 'MISMAS FILAS, PRIMA DISTINTA' : 'COINCIDE';
-    cons.push({ cert, seg, nb, pb, nt, pt, db: nb - nt, dp: r2(pb - pt), sit, cmax: m ? m.cmax : '', fmin: b ? b.fmin : '', fmax: b ? b.fmax : '', obs: '' });
+    cons.push({ cert, seg, nb, pb, nt, pt, db: nb - nt, dp: r2(pb - pt), sit, cmax: m ? m.cmax : '', fmin: b ? b.fmin : '', fmax: b ? b.fmax : '', pbPlan: b ? b.plan : null, ptPlan: m ? m.plan : null, obs: '' });
   }
   // Observaciones automáticas
   const soloB = cons.filter(c => c.sit === 'SOLO BANCO'), soloM = cons.filter(c => c.sit === 'SOLO MONOKERA');
   const add = (c, s) => { c.obs = c.obs ? c.obs + ' | ' + s : s; };
+  let planDif = 0;
+  for (const c of cons) if (c.pbPlan && c.ptPlan && c.pbPlan !== c.ptPlan) { planDif++; add(c, `Plan distinto: banco ${planEtiqueta(c.seg, c.pbPlan)} vs TXT ${planEtiqueta(c.seg, c.ptPlan)}`); }
   for (const c of cons) if (c.nb >= 5) add(c, `${c.nb} cobros en el mes en el banco (revisar posible cobro repetido)`);
   for (const a of soloB) for (const b of soloM) if (a.seg === b.seg && posibleDigitacion(a.cert, b.cert)) {
     add(a, `Posible error de digitación: ${b.cert} aparece solo en el TXT`);
@@ -209,8 +239,8 @@ function procesarCobros(wbBanco, texto) {
   }
   const orden = { 'SOLO BANCO': 0, 'SOLO MONOKERA': 1, 'BANCO TIENE MÁS FILAS': 2, 'MONOKERA TIENE MÁS FILAS': 3, 'MISMAS FILAS, PRIMA DISTINTA': 4, 'COINCIDE': 5 };
   cons.sort((a, b) => orden[a.sit] - orden[b.sit] || a.seg.localeCompare(b.seg) || a.cert.localeCompare(b.cert));
-  const aFila = c => [c.cert, c.seg, c.nb, c.pb, c.nt, c.pt, c.db, c.dp, c.sit, c.cmax, c.fmin, c.fmax, c.obs];
-  const encabezado = ['NU_CERTIFICADO', 'SEGURO', 'Filas banco', 'Prima banco', 'Filas TXT Monokera', 'Prima TXT Monokera', 'Dif. filas (banco − TXT)', 'Dif. prima (banco − TXT)', 'Situación', 'Cuota máx. en TXT', 'Primera fecha banco', 'Última fecha banco', 'Observación'];
+  const aFila = c => [c.cert, c.seg, c.nb, c.pb, c.nt, c.pt, c.db, c.dp, c.sit, c.cmax, c.fmin, c.fmax, planEtiqueta(c.seg, c.pbPlan), planEtiqueta(c.seg, c.ptPlan), c.obs];
+  const encabezado = ['NU_CERTIFICADO', 'SEGURO', 'Filas banco', 'Prima banco', 'Filas TXT Monokera', 'Prima TXT Monokera', 'Dif. filas (banco − TXT)', 'Dif. prima (banco − TXT)', 'Situación', 'Cuota máx. en TXT', 'Primera fecha banco', 'Última fecha banco', 'Plan banco', 'Plan TXT', 'Observación'];
   // Resumen por seguro
   const segs = [...new Set([...bancoFilas.map(x => x.seg), ...tx.reg.map(x => x.seg)])].sort();
   const porSeg = segs.map(s => {
@@ -227,19 +257,54 @@ function procesarCobros(wbBanco, texto) {
   const dias = new Map();
   for (const x of bancoFilas) { if (!x.f) continue; const o = dias.get(x.f) || { n: 0, sin: 0 }; o.n++; if (!txt.has(x.k)) o.sin++; dias.set(x.f, o); }
   const porDia = [...dias.entries()].sort().map(([f, o]) => [f, o.n, o.sin, o.n ? Math.round(o.sin / o.n * 1000) / 10 + '%' : '0%']);
+  // Repetición (solo recurrentes): banco con TIPO = RECURRENTE vs TXT con cuota >= 2
+  const clavesRec = [...new Set([...banRec.keys(), ...txtRec.keys()])].map(k => [banRec.get(k) || 0, txtRec.get(k) || 0]);
+  const maxB = Math.max(0, ...clavesRec.map(x => x[0])), maxT = Math.max(0, ...clavesRec.map(x => x[1]));
+  const mat = Array.from({ length: maxB + 1 }, () => new Array(maxT + 1).fill(0));
+  clavesRec.forEach(([b, m]) => mat[b][m]++);
+  const repEnc = ['Veces en banco \\ Veces en Monokera', ...Array.from({ length: maxT + 1 }, (_, j) => j), 'Total certificados'];
+  const repFilas = mat.map((fila, i) => [i, ...fila, fila.reduce((a, x) => a + x, 0)]).filter((f, i) => i === 0 || f[f.length - 1] > 0);
+  repFilas.push(['Total certificados', ...Array.from({ length: maxT + 1 }, (_, j) => mat.reduce((a, f) => a + f[j], 0)), clavesRec.length]);
+  const repResumen = [
+    ['Certificados únicos con cobro recurrente (banco o Monokera)', clavesRec.length],
+    ['Se repiten (2 o más veces) en el banco', clavesRec.filter(x => x[0] >= 2).length],
+    ['Se repiten (2 o más veces) en Monokera', clavesRec.filter(x => x[1] >= 2).length],
+    ['Repetidos en ambos lados', clavesRec.filter(x => x[0] >= 2 && x[1] >= 2).length],
+    ['Se repiten en el banco pero no en Monokera', clavesRec.filter(x => x[0] >= 2 && x[1] < 2).length],
+    ['Se repiten en Monokera pero no en el banco', clavesRec.filter(x => x[1] >= 2 && x[0] < 2).length],
+    ['Mismas veces en ambos lados', clavesRec.filter(x => x[0] > 0 && x[0] === x[1]).length],
+    ['Distinta cantidad de veces (en ambos lados)', clavesRec.filter(x => x[0] > 0 && x[1] > 0 && x[0] !== x[1]).length]
+  ];
+  // Lista de certificados recurrentes con distinta cantidad de pagos
+  const pagos = n => `${n} ${n === 1 ? 'pago' : 'pagos'}`;
+  const repLista = [...new Set([...banRec.keys(), ...txtRec.keys()])].map(k => {
+    const [cert, seg] = k.split('|'); const nb = banRec.get(k) || 0, nt = txtRec.get(k) || 0;
+    if (nb === nt) return null;
+    const extra = nb === 0 ? ' (no aparece en el banco)' : nt === 0 ? ' (no aparece en Monokera)' : nb < nt ? ` (Monokera tiene ${nt - nb} más)` : ` (el banco tiene ${nb - nt} más)`;
+    return [cert, seg, nb, nt, nb - nt, `En el banco ${pagos(nb)} y en Monokera ${pagos(nt)}${extra}`];
+  }).filter(Boolean).sort((a, b) => a[2] - b[2] || a[3] - b[3] || a[0].localeCompare(b[0]));
+  const repListaEnc = ['NU_CERTIFICADO', 'SEGURO', 'Pagos en banco', 'Pagos en Monokera', 'Diferencia (banco − Monokera)', 'Mensaje'];
+  // Cuadre por plan (equivale al pivot del banco)
+  const planes = new Map();
+  const acum = (arr, lado) => arr.forEach(x => { const key = x.seg + '|' + (x.plan ?? 0); const o = planes.get(key) || { seg: x.seg, plan: x.plan, nb: 0, pb: 0, nt: 0, pt: 0 }; if (lado === 'b') { o.nb++; o.pb += x.prima; } else { o.nt++; o.pt += x.prima; } planes.set(key, o); });
+  acum(bancoFilas, 'b'); acum(tx.reg, 't');
+  const porPlan = [...planes.values()].sort((a, b) => a.seg.localeCompare(b.seg) || (a.plan || 0) - (b.plan || 0)).map(o => [o.seg, planEtiqueta(o.seg, o.plan) || '(sin plan)', o.nb, r2(o.pb), o.nt, r2(o.pt), o.nb - o.nt, r2(o.pb - o.pt)]);
   // Alertas
   const alertas = [];
+  if (soloRec) alertas.push(`Solo cobros recurrentes: se ignoraron ${ignTxt} filas de cuota 1 (ventas) del TXT${iTipo !== undefined ? ` y ${ignBan} ventas del banco` : ''}.`);
   if (conEspacios) alertas.push(`${conEspacios} certificados del banco vienen con espacios a la derecha (se limpiaron para el cruce; si cruzas directo en Excel usa ESPACIOS()).`);
   if (tx.malas) alertas.push(`${tx.malas} líneas del TXT no tienen el formato esperado y se ignoraron.`);
   if (tx.colsRaras) alertas.push(`${tx.colsRaras} líneas del TXT no tienen 12 columnas.`);
   if (tx.periodos.length > 1) alertas.push(`El TXT trae más de un periodo: ${tx.periodos.join(', ')}.`);
   for (const [f, o] of dias) if (o.sin >= 10 && o.sin / o.n >= 0.2) alertas.push(`${f}: ${o.sin} de ${o.n} filas del banco no tienen su certificado en el TXT (posible lote faltante).`);
   for (const c of cons) if (c.nb >= 5) alertas.push(`${c.cert}: ${c.nb} cobros en el banco en el mes${c.nt === 0 ? ' y ninguno en el TXT' : ''}.`);
+  if (planDif) alertas.push(`${planDif} certificado(s) con plan distinto entre el banco y el TXT (ver columna Observación).`);
   const posibles = cons.filter(c => c.obs.includes('digitación')).length / 2;
   if (posibles) alertas.push(`${Math.ceil(posibles)} posible(s) error(es) de digitación entre certificados solo-banco y solo-TXT (ver columna Observación).`);
   return {
     encabezado, consolidado: cons.map(aFila), diferencias: cons.filter(c => c.sit !== 'COINCIDE').map(aFila),
-    porSeg, tot, situ, porDia, alertas,
+    porSeg, tot, situ, porPlan, porDia, alertas, repEnc, repFilas, repResumen, repLista, repListaEnc,
+    soloRec, ignorados: { txt: ignTxt, banco: ignBan },
     totales: { filasBanco: bancoFilas.length, filasTxt: tx.reg.length }
   };
 }
@@ -318,11 +383,11 @@ function construirLibro(anul, cob, alt) {
   const res = [['CIERRE MENSUAL: BANCO vs MONOKERA'], []];
   if (anul) {
     const r = anul.resumen;
-    res.push(['ANULACIONES (llave: póliza)'], ['Coinciden', r.coinciden], ['Solo en Monokera (falta en banco)', r.soloMon], ['Solo en banco (falta en Monokera)', r.soloBan], ['Total pólizas únicas', r.total], ['Filas trama Monokera', r.filasMon], ['Filas banco (desaf sepelio + CP)', r.filasBan], []);
+    res.push(['ANULACIONES (llave: póliza)'], ['Coinciden', r.coinciden], ['Solo en Monokera (falta en banco)', r.soloMon], ['Solo en banco (falta en Monokera)', r.soloBan], ['Total pólizas únicas', r.total], ['Filas trama Monokera', r.filasMon], ['Filas banco (desaf sepelio + CP)', r.filasBan], [r.soloConDev ? 'Pólizas ignoradas (monto 0 en todos los lados donde aparecen)' : 'Filtro de monto 0 desactivado', r.soloConDev ? r.excluidas : ''], ['Etiquetas de monto'], ...(anul.etiquetas.length ? anul.etiquetas : [['Sin etiquetas', 0]]), []);
   }
   if (cob) {
-    res.push(['COBROS (llave: certificado + seguro)'], ['Seguro', 'Filas banco', 'Prima banco', 'Filas Monokera', 'Prima Monokera', 'Dif. filas', 'Dif. prima'], ...cob.porSeg, cob.tot, [],
-      ['Origen de la diferencia', 'Certificados', 'Dif. filas (banco − TXT)', 'Dif. prima (banco − TXT)'], ...cob.situ, [], ['ALERTAS'], ...(cob.alertas.length ? cob.alertas.map(a => [a]) : [['Sin alertas']]));
+    res.push([cob.soloRec ? 'COBROS RECURRENTES (llave: certificado + seguro; TXT con cuota mayor a 1, banco TIPO = RECURRENTE)' : 'COBROS (ventas y recurrentes; llave: certificado + seguro)'], ['Seguro', 'Filas banco', 'Prima banco', 'Filas Monokera', 'Prima Monokera', 'Dif. filas', 'Dif. prima'], ...cob.porSeg, cob.tot, [],
+      ['Origen de la diferencia', 'Certificados', 'Dif. filas (banco − TXT)', 'Dif. prima (banco − TXT)'], ...cob.situ, [], ['Cuadre por plan', 'Plan', 'Filas banco', 'Prima banco', 'Filas Monokera', 'Prima Monokera', 'Dif. filas', 'Dif. prima'], ...cob.porPlan.map(r => ['', ...r]), [], ['ALERTAS'], ...(cob.alertas.length ? cob.alertas.map(a => [a]) : [['Sin alertas']]));
   }
   if (alt) {
     const r = alt.resumen;
@@ -335,6 +400,8 @@ function construirLibro(anul, cob, alt) {
   if (cob) {
     add('Cobros_Diferencias', [cob.encabezado, ...cob.diferencias]);
     add('Cobros_Consolidado', [cob.encabezado, ...cob.consolidado]);
+    add('Cobros_Repeticiones', [['Solo cobros recurrentes (banco: TIPO = RECURRENTE; Monokera: cuota 2 o más). Cada número es la cantidad de certificados únicos con esa combinación; 0 = no aparece en ese lado.'], [], ...cob.repResumen, [], cob.repEnc, ...cob.repFilas]);
+    add('Cobros_Rec_Distintos', [cob.repListaEnc, ...cob.repLista]);
     add('Cobros_PorDia', [['Fecha', 'Filas banco', 'Filas sin certificado en TXT', '%'], ...cob.porDia]);
   }
   return wb;
@@ -346,7 +413,7 @@ if (typeof module !== 'undefined') module.exports = { procesarAnulaciones, proce
 const $ = id => document.getElementById(id);
 let ultimo = { anul: null, cob: null, alt: null };
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const BADGES = { 'COINCIDE': 'ok', 'SOLO BANCO': 'ba', 'SOLO MONOKERA': 'wa', 'SOLO EMISIÓN': 'wa', 'BANCO TIENE MÁS FILAS': 'or', 'MONOKERA TIENE MÁS FILAS': 'wa', 'PRIMA DISTINTA': 'pu', 'MISMAS FILAS, PRIMA DISTINTA': 'pu' };
+const BADGES = { 'MONTOS IGUALES': 'ok', 'MONTO DISTINTO': 'pu', 'BANCO CON PRIMA, MONOKERA EN 0': 'ba', 'MONOKERA CON PRIMA, BANCO EN 0': 'or', 'AMBOS EN 0': 'wa', 'SOLO MONOKERA EN 0': 'wa', 'SOLO BANCO EN 0': 'wa', 'COINCIDE': 'ok', 'SOLO BANCO': 'ba', 'SOLO MONOKERA': 'wa', 'SOLO EMISIÓN': 'wa', 'BANCO TIENE MÁS FILAS': 'or', 'MONOKERA TIENE MÁS FILAS': 'wa', 'PRIMA DISTINTA': 'pu', 'MISMAS FILAS, PRIMA DISTINTA': 'pu' };
 const celda = v => typeof v === 'number' ? esc(v.toLocaleString('en-US', { maximumFractionDigits: 2 })) : (BADGES[v] ? `<span class="b ${BADGES[v]}">${esc(v)}</span>` : esc(v));
 const tablaHtml = (enc, filas, max) => `<div class="scroll"><table><thead><tr>${enc.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${filas.slice(0, max || 1e9).map(f => `<tr>${f.map(v => `<td>${celda(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 
@@ -378,17 +445,21 @@ async function procesar() {
         ${r.total - r.coinciden ? '<h3>Diferencias</h3>' + tablaHtml(al.encabezado, al.filas.filter(x => x[9] !== 'COINCIDE'), 100) : ''}</section>`;
     }
     if (fa) {
-      const a = procesarAnulaciones(banco, await leerLibro(fa)); ultimo.anul = a; const r = a.resumen;
+      const a = procesarAnulaciones(banco, await leerLibro(fa), $('chkDev').checked); ultimo.anul = a; const r = a.resumen;
       html += `<section><h2>Anulaciones</h2>
         <div class="cards"><div class="card"><b>${r.coinciden}</b>coinciden</div><div class="card warn"><b>${r.soloMon}</b>solo en Monokera</div><div class="card bad"><b>${r.soloBan}</b>solo en banco</div></div>
-        <p class="nota">Pólizas únicas: ${r.total}. Filas Monokera: ${r.filasMon}. Filas banco: ${r.filasBan}.</p>
-        ${tablaHtml(a.encabezado, a.filas.filter(x => x[1] !== 'COINCIDE'), 100)}</section>`;
+        <p class="nota">Pólizas únicas: ${r.total}. Filas Monokera: ${r.filasMon}. Filas banco: ${r.filasBan}. ${r.soloConDev ? `Pólizas ignoradas por tener monto 0 en todos los lados donde aparecen: ${r.excluidas}.` : 'Filtro de monto 0 desactivado.'}</p>
+        <h3>Etiquetas de monto</h3>${a.etiquetas.length ? tablaHtml(['Etiqueta', 'Pólizas'], a.etiquetas) : '<p class="nota">Sin etiquetas.</p>'}
+        ${tablaHtml(a.encabezado, a.filas.filter(x => x[1] !== 'COINCIDE' || x[2] !== 'MONTOS IGUALES'), 100)}</section>`;
     }
     if (fc) {
-      const c = procesarCobros(banco, await leerTexto(fc)); ultimo.cob = c;
-      html += `<section><h2>Cobros</h2>
+      const c = procesarCobros(banco, await leerTexto(fc), $('chkRec').checked); ultimo.cob = c;
+      html += `<section><h2>${c.soloRec ? 'Cobros recurrentes' : 'Cobros (ventas y recurrentes)'}</h2>
         <h3>Cuadre por seguro</h3>${tablaHtml(['Seguro', 'Filas banco', 'Prima banco', 'Filas Monokera', 'Prima Monokera', 'Dif. filas', 'Dif. prima'], [...c.porSeg, c.tot])}
         <h3>Origen de la diferencia</h3>${tablaHtml(['Situación', 'Certificados', 'Dif. filas (banco − TXT)', 'Dif. prima'], c.situ)}
+        <h3>Cuadre por plan</h3>${tablaHtml(['Seguro', 'Plan', 'Filas banco', 'Prima banco', 'Filas Monokera', 'Prima Monokera', 'Dif. filas', 'Dif. prima'], c.porPlan)}
+        <h3>Cobros recurrentes: veces que se repite cada certificado, banco vs Monokera</h3>${tablaHtml(['Resumen', 'Certificados'], c.repResumen)}<p class="nota">Solo recurrentes (banco TIPO = RECURRENTE; Monokera cuota 2 o más). Cada número es la cantidad de certificados únicos con esa combinación; por ejemplo, fila 2 / columna 1 = certificados con 2 cobros en el banco y 1 en Monokera.</p>${tablaHtml(c.repEnc, c.repFilas)}
+        <h3>Recurrentes con distinta cantidad de pagos (${c.repLista.length})</h3>${tablaHtml(c.repListaEnc, c.repLista, 200)}<p class="nota">${c.repLista.length > 200 ? 'Se muestran 200; la lista completa está en la hoja Cobros_Rec_Distintos del Excel.' : ''}</p>
         <h3>Alertas</h3>${c.alertas.length ? '<ul>' + c.alertas.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>' : '<p class="nota">Sin alertas.</p>'}
         <h3>Certificados con diferencia (${c.diferencias.length})</h3>${tablaHtml(c.encabezado, c.diferencias, 100)}
         <p class="nota">${c.diferencias.length > 100 ? 'Se muestran 100; el detalle completo está en el Excel.' : ''}</p></section>`;
